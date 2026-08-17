@@ -1,0 +1,118 @@
+blueprint:
+  name: ThreeWay Virtual
+  description: >-
+    Sincroniza o estado entre múltiplas luzes e switches, criando um
+    interruptor paralelo virtual.
+
+    Quando qualquer entidade selecionada é ligada, as demais entidades que
+    estiverem desligadas são ligadas.
+
+    Quando qualquer entidade selecionada é desligada, as demais entidades que
+    estiverem ligadas são desligadas.
+
+    Proteções contra loop:
+
+    - Reage somente às transições OFF → ON e ON → OFF.
+    - Não envia comando para a entidade que originou a mudança.
+    - Não envia comandos para entidades que já estejam no estado desejado.
+    - Ignora entidades indisponíveis ou com estado desconhecido.
+    - Mantém uma pequena janela de bloqueio após cada sincronização para
+      absorver mudanças de estado provocadas pela própria automação.
+    - Utiliza mode single para impedir execuções simultâneas.
+
+  domain: automation
+
+  input:
+    entrada_switchs:
+      name: Pontos de Iluminação
+      description: >-
+        Selecione as luzes e/ou switches que deverão funcionar como
+        interruptores paralelos.
+      selector:
+        entity:
+          domain:
+            - switch
+            - light
+          multiple: true
+
+    tempo_bloqueio:
+      name: Proteção contra realimentação
+      description: >-
+        Tempo durante o qual novas alterações serão ignoradas após uma
+        sincronização. O padrão de 3 segundos é recomendado para absorver
+        atualizações atrasadas de dispositivos Zigbee e Wi-Fi.
+      default: 3
+      selector:
+        number:
+          min: 1
+          max: 10
+          step: 1
+          unit_of_measurement: s
+          mode: slider
+
+triggers:
+  - trigger: state
+    entity_id: !input entrada_switchs
+    from: "off"
+    to: "on"
+    id: ligar
+
+  - trigger: state
+    entity_id: !input entrada_switchs
+    from: "on"
+    to: "off"
+    id: desligar
+
+variables:
+  pontos: !input entrada_switchs
+
+  estado_desejado: >-
+    {% if trigger.id == 'ligar' %}
+      on
+    {% else %}
+      off
+    {% endif %}
+
+  estado_oposto: >-
+    {% if trigger.id == 'ligar' %}
+      off
+    {% else %}
+      on
+    {% endif %}
+
+  alvos: >-
+    {{
+      expand(pontos)
+      | selectattr('state', 'eq', estado_oposto | trim)
+      | rejectattr('entity_id', 'eq', trigger.entity_id)
+      | map(attribute='entity_id')
+      | list
+    }}
+
+conditions:
+  - condition: template
+    value_template: "{{ alvos | count > 0 }}"
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: ligar
+        sequence:
+          - action: homeassistant.turn_on
+            target:
+              entity_id: "{{ alvos }}"
+
+      - conditions:
+          - condition: trigger
+            id: desligar
+        sequence:
+          - action: homeassistant.turn_off
+            target:
+              entity_id: "{{ alvos }}"
+
+  - delay:
+      seconds: !input tempo_bloqueio
+
+mode: single
+max_exceeded: silent
