@@ -1,0 +1,230 @@
+blueprint:
+  name: WASP J2-13 - Ocupação Super Otimizada
+  description: >-
+    Controla a ocupação de um cômodo utilizando sensor de porta, sensor de
+    movimento e timer, com proteção contra autoacionamento e reinicializações
+    desnecessárias.
+
+    COMPORTAMENTO:
+
+    Movimento:
+    - Cancela qualquer timer de desocupação em andamento.
+    - Marca o cômodo como ocupado.
+    - Liga a luz principal somente quando o cômodo passa de desocupado para ocupado.
+
+    Porta aberta ou fechada:
+    - Inicia ou reinicia o timer de desocupação.
+    - Se houver movimento durante esse período, o timer é cancelado.
+
+    Timer finalizado:
+    - Confirma que não há movimento.
+    - Marca o cômodo como desocupado.
+    - Desliga a luz principal e as luzes adicionais.
+
+    Ausência prolongada:
+    - Se o sensor permanecer sem movimento por 1 hora contínua, o cômodo é
+      desocupado diretamente.
+    - Não adiciona a duração do timer depois dessa 1 hora.
+
+    IMPORTANTE:
+    - O helper de ocupação NÃO é utilizado como gatilho.
+    - Isso evita que alterações feitas pela própria automação provoquem novas
+      execuções ou reinicializações do fluxo.
+
+    HELPERS UTILIZADOS:
+
+    ocupado_boolean:
+    - input_boolean que registra se o cômodo está ocupado.
+
+    automacao_boolean:
+    - input_boolean que habilita ou desabilita esta automação.
+
+    timer_ocupado:
+    - timer utilizado após eventos da porta para confirmar a desocupação.
+
+  domain: automation
+  source_url: https://github.com/msoaresp/home-assistant-blueprints/blob/main/blueprints/automation/msoaresp/wasp_j2_13_ocupacao_super_otimizada.yaml
+
+  input:
+    porta_sensor:
+      name: Sensor de Porta
+      description: Sensor de contato da porta do cômodo.
+      selector:
+        entity:
+          domain: binary_sensor
+
+    movimento_sensor:
+      name: Sensor de Movimento
+      description: Sensor de presença ou movimento do cômodo.
+      selector:
+        entity:
+          domain: binary_sensor
+
+    ocupado_boolean:
+      name: Helper de Ocupação
+      description: Input boolean que representa se o cômodo está ocupado.
+      selector:
+        entity:
+          domain: input_boolean
+
+    automacao_boolean:
+      name: Automação Ativa
+      description: Input boolean que habilita ou desabilita a automação.
+      selector:
+        entity:
+          domain: input_boolean
+
+    timer_ocupado:
+      name: Timer de Desocupação
+      description: Timer utilizado após alterações da porta.
+      selector:
+        entity:
+          domain: timer
+
+    luz_principal:
+      name: Luz Principal
+      description: Luz que será ligada quando o cômodo passar a ocupado.
+      selector:
+        entity:
+          domain: light
+
+    luzes_adicionais:
+      name: Luzes Adicionais
+      description: >-
+        Luzes adicionais que serão desligadas quando o cômodo for considerado
+        desocupado.
+      default: []
+      selector:
+        entity:
+          domain: light
+          multiple: true
+
+trigger:
+  - platform: state
+    entity_id: !input porta_sensor
+    from: "off"
+    to: "on"
+    id: porta_aberta
+
+  - platform: state
+    entity_id: !input porta_sensor
+    from: "on"
+    to: "off"
+    id: porta_fechada
+
+  - platform: state
+    entity_id: !input movimento_sensor
+    from: "off"
+    to: "on"
+    id: movimento
+
+  - platform: state
+    entity_id: !input movimento_sensor
+    to: "off"
+    for:
+      hours: 1
+    id: ausencia_1h
+
+  - platform: event
+    event_type: timer.finished
+    event_data:
+      entity_id: !input timer_ocupado
+    id: timer_finalizado
+
+condition:
+  - condition: state
+    entity_id: !input automacao_boolean
+    state: "on"
+
+variables:
+  luzes_adicionais_selecionadas: !input luzes_adicionais
+
+action:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: movimento
+        sequence:
+          - action: timer.cancel
+            target:
+              entity_id: !input timer_ocupado
+
+          - if:
+              - condition: state
+                entity_id: !input ocupado_boolean
+                state: "off"
+            then:
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: !input ocupado_boolean
+
+              - action: light.turn_on
+                target:
+                  entity_id: !input luz_principal
+
+      - conditions:
+          - condition: trigger
+            id:
+              - porta_aberta
+              - porta_fechada
+        sequence:
+          - action: timer.start
+            target:
+              entity_id: !input timer_ocupado
+
+      - conditions:
+          - condition: trigger
+            id: timer_finalizado
+          - condition: state
+            entity_id: !input movimento_sensor
+            state: "off"
+          - condition: state
+            entity_id: !input ocupado_boolean
+            state: "on"
+        sequence:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input ocupado_boolean
+
+          - action: light.turn_off
+            target:
+              entity_id: !input luz_principal
+
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ luzes_adicionais_selecionadas | count > 0 }}
+            then:
+              - action: light.turn_off
+                target:
+                  entity_id: !input luzes_adicionais
+
+      - conditions:
+          - condition: trigger
+            id: ausencia_1h
+          - condition: state
+            entity_id: !input ocupado_boolean
+            state: "on"
+        sequence:
+          - action: timer.cancel
+            target:
+              entity_id: !input timer_ocupado
+
+          - action: input_boolean.turn_off
+            target:
+              entity_id: !input ocupado_boolean
+
+          - action: light.turn_off
+            target:
+              entity_id: !input luz_principal
+
+          - if:
+              - condition: template
+                value_template: >-
+                  {{ luzes_adicionais_selecionadas | count > 0 }}
+            then:
+              - action: light.turn_off
+                target:
+                  entity_id: !input luzes_adicionais
+
+mode: restart
