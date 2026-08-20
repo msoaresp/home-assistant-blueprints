@@ -1,0 +1,118 @@
+blueprint:
+  name: Enviar Mensagem Via Alexa
+  description: >-
+    Envia uma mensagem por uma ou mais caixas Echo selecionadas, ajustando
+    temporariamente o volume e restaurando, ao final, o volume original de
+    cada dispositivo individualmente.
+
+    FUNCIONAMENTO:
+
+    - Permite selecionar uma ou várias Alexas ao mesmo tempo.
+    - Armazena o volume atual de cada dispositivo selecionado.
+    - Ajusta todas temporariamente para o volume definido para o anúncio.
+    - Envia a mensagem como anúncio pelo Alexa Media Player.
+    - Aguarda um tempo proporcional ao tamanho da mensagem.
+    - Restaura individualmente o volume anterior de cada Alexa.
+    - Se algum dispositivo não informar volume_level, utiliza 0.3 como
+      valor de segurança para restauração.
+
+  domain: script
+  source_url: https://github.com/msoaresp/home-assistant-blueprints/blob/main/script/enviar_mensagem_via_alexa.yaml
+
+  input: {}
+
+mode: queued
+max: 10
+
+fields:
+  mensagem:
+    name: Mensagem
+    description: Texto que será anunciado.
+    required: true
+    selector:
+      text:
+        multiline: true
+
+  onde_anunciar:
+    name: Onde anunciar
+    description: Selecione uma ou mais caixas Echo.
+    required: true
+    default: []
+    selector:
+      entity:
+        filter:
+          - integration: alexa_media
+            domain: media_player
+        multiple: true
+
+  volume:
+    name: Volume do anúncio
+    description: Volume temporário utilizado durante o anúncio.
+    required: true
+    default: 0.9
+    selector:
+      number:
+        min: 0.1
+        max: 1
+        step: 0.1
+        mode: slider
+
+variables:
+  alexas: "{{ onde_anunciar }}"
+
+  volumes_originais: >-
+    {% set ns = namespace(lista=[]) %}
+    {% for entidade in alexas %}
+      {% set volume_atual = state_attr(entidade, 'volume_level') %}
+      {% set ns.lista = ns.lista + [{
+        'entity_id': entidade,
+        'volume': volume_atual | float(0.3)
+      }] %}
+    {% endfor %}
+    {{ ns.lista | to_json }}
+
+sequence:
+  - condition: template
+    value_template: >-
+      {{
+        mensagem | default('') | trim | length > 0
+        and alexas | default([]) | count > 0
+      }}
+
+  - action: media_player.volume_set
+    continue_on_error: true
+    target:
+      entity_id: "{{ alexas }}"
+    data:
+      volume_level: "{{ volume | float(0.9) }}"
+
+  - delay:
+      seconds: 1
+
+  - action: notify.alexa_media
+    data:
+      message: "{{ mensagem }}"
+      target: "{{ alexas }}"
+      data:
+        type: announce
+
+  - delay:
+      seconds: >-
+        {{
+          [
+            5,
+            ((mensagem | trim | length / 12) | round(0, 'ceil') | int) + 3
+          ] | max
+        }}
+
+  - repeat:
+      for_each: "{{ volumes_originais | from_json }}"
+      sequence:
+        - action: media_player.volume_set
+          continue_on_error: true
+          target:
+            entity_id: "{{ repeat.item.entity_id }}"
+          data:
+            volume_level: "{{ repeat.item.volume | float(0.3) }}"
+
+icon: mdi:bullhorn
