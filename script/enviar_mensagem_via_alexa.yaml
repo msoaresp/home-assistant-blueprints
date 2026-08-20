@@ -1,23 +1,19 @@
 blueprint:
   name: Enviar Mensagem Via Alexa
   description: >-
+    Versão: 1.2.0
+
     Envia uma mensagem por uma ou mais caixas Echo selecionadas, ajustando
-    temporariamente o volume e restaurando, ao final, o volume original de
-    cada dispositivo individualmente.
+    temporariamente o volume e restaurando, ao final, o volume anterior de
+    cada dispositivo através do serviço nativo do Alexa Media Player.
 
     FUNCIONAMENTO:
 
     - Permite selecionar uma ou várias Alexas ao mesmo tempo.
-    - Captura o volume atual de cada dispositivo antes de qualquer alteração.
     - Ajusta todas temporariamente para o volume definido para o anúncio.
     - Envia a mensagem como anúncio pelo Alexa Media Player.
     - Aguarda a conclusão estimada do anúncio.
-    - Restaura cada Alexa individualmente e de forma sequencial.
-    - Confere o volume após a restauração e faz uma segunda tentativa quando
-      necessário.
-    - Se o volume atual não estiver disponível no Home Assistant, tenta usar
-      o atributo previous_volume. Se nenhum dos dois existir, não altera o
-      volume daquele dispositivo ao final.
+    - Restaura individualmente cada Alexa usando alexa_media.restore_volume.
 
   domain: script
   source_url: https://github.com/msoaresp/home-assistant-blueprints/blob/main/script/enviar_mensagem_via_alexa.yaml
@@ -61,20 +57,8 @@ fields:
         mode: slider
 
 variables:
+  blueprint_version: "1.2.0"
   alexas: "{{ onde_anunciar | default([]) }}"
-
-  volumes_originais: >-
-    {% set ns = namespace(lista=[]) %}
-    {% for entidade in alexas %}
-      {% set volume_atual = state_attr(entidade, 'volume_level') %}
-      {% set volume_anterior = state_attr(entidade, 'previous_volume') %}
-      {% set volume_salvo = volume_atual if volume_atual is not none else volume_anterior %}
-      {% set ns.lista = ns.lista + [{
-        'entity_id': entidade,
-        'volume': volume_salvo
-      }] %}
-    {% endfor %}
-    {{ ns.lista | to_json }}
 
 sequence:
   - condition: template
@@ -111,40 +95,12 @@ sequence:
         }}
 
   - repeat:
-      for_each: "{{ volumes_originais | from_json }}"
+      for_each: "{{ alexas }}"
       sequence:
-        - if:
-            - condition: template
-              value_template: "{{ repeat.item.volume is not none }}"
-          then:
-            - action: media_player.volume_set
-              continue_on_error: true
-              target:
-                entity_id: "{{ repeat.item.entity_id }}"
-              data:
-                volume_level: "{{ repeat.item.volume | float }}"
-
-            - delay:
-                seconds: 2
-
-            - if:
-                - condition: template
-                  value_template: >-
-                    {% set atual = state_attr(repeat.item.entity_id, 'volume_level') %}
-                    {{
-                      atual is none
-                      or ((atual | float) - (repeat.item.volume | float)) | abs > 0.05
-                    }}
-              then:
-                - action: media_player.volume_set
-                  continue_on_error: true
-                  target:
-                    entity_id: "{{ repeat.item.entity_id }}"
-                  data:
-                    volume_level: "{{ repeat.item.volume | float }}"
-
-                - delay:
-                    seconds: 2
+        - action: alexa_media.restore_volume
+          continue_on_error: true
+          data:
+            entity_id: "{{ repeat.item }}"
 
         - delay:
             seconds: 1
