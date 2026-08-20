@@ -8,13 +8,16 @@ blueprint:
     FUNCIONAMENTO:
 
     - Permite selecionar uma ou várias Alexas ao mesmo tempo.
-    - Armazena o volume atual de cada dispositivo selecionado.
+    - Captura o volume atual de cada dispositivo antes de qualquer alteração.
     - Ajusta todas temporariamente para o volume definido para o anúncio.
     - Envia a mensagem como anúncio pelo Alexa Media Player.
-    - Aguarda um tempo proporcional ao tamanho da mensagem.
-    - Restaura individualmente o volume anterior de cada Alexa.
-    - Se algum dispositivo não informar volume_level, utiliza 0.3 como
-      valor de segurança para restauração.
+    - Aguarda a conclusão estimada do anúncio.
+    - Restaura cada Alexa individualmente e de forma sequencial.
+    - Confere o volume após a restauração e faz uma segunda tentativa quando
+      necessário.
+    - Se o volume atual não estiver disponível no Home Assistant, tenta usar
+      o atributo previous_volume. Se nenhum dos dois existir, não altera o
+      volume daquele dispositivo ao final.
 
   domain: script
   source_url: https://github.com/msoaresp/home-assistant-blueprints/blob/main/script/enviar_mensagem_via_alexa.yaml
@@ -58,15 +61,17 @@ fields:
         mode: slider
 
 variables:
-  alexas: "{{ onde_anunciar }}"
+  alexas: "{{ onde_anunciar | default([]) }}"
 
   volumes_originais: >-
     {% set ns = namespace(lista=[]) %}
     {% for entidade in alexas %}
       {% set volume_atual = state_attr(entidade, 'volume_level') %}
+      {% set volume_anterior = state_attr(entidade, 'previous_volume') %}
+      {% set volume_salvo = volume_atual if volume_atual is not none else volume_anterior %}
       {% set ns.lista = ns.lista + [{
         'entity_id': entidade,
-        'volume': volume_atual | float(0.3)
+        'volume': volume_salvo
       }] %}
     {% endfor %}
     {{ ns.lista | to_json }}
@@ -76,7 +81,7 @@ sequence:
     value_template: >-
       {{
         mensagem | default('') | trim | length > 0
-        and alexas | default([]) | count > 0
+        and alexas | count > 0
       }}
 
   - action: media_player.volume_set
@@ -87,7 +92,7 @@ sequence:
       volume_level: "{{ volume | float(0.9) }}"
 
   - delay:
-      seconds: 1
+      seconds: 2
 
   - action: notify.alexa_media
     data:
@@ -100,19 +105,48 @@ sequence:
       seconds: >-
         {{
           [
-            5,
-            ((mensagem | trim | length / 12) | round(0, 'ceil') | int) + 3
+            12,
+            ((mensagem | trim | length / 10) | round(0, 'ceil') | int) + 6
           ] | max
         }}
 
   - repeat:
       for_each: "{{ volumes_originais | from_json }}"
       sequence:
-        - action: media_player.volume_set
-          continue_on_error: true
-          target:
-            entity_id: "{{ repeat.item.entity_id }}"
-          data:
-            volume_level: "{{ repeat.item.volume | float(0.3) }}"
+        - if:
+            - condition: template
+              value_template: "{{ repeat.item.volume is not none }}"
+          then:
+            - action: media_player.volume_set
+              continue_on_error: true
+              target:
+                entity_id: "{{ repeat.item.entity_id }}"
+              data:
+                volume_level: "{{ repeat.item.volume | float }}"
+
+            - delay:
+                seconds: 2
+
+            - if:
+                - condition: template
+                  value_template: >-
+                    {% set atual = state_attr(repeat.item.entity_id, 'volume_level') %}
+                    {{
+                      atual is none
+                      or ((atual | float) - (repeat.item.volume | float)) | abs > 0.05
+                    }}
+              then:
+                - action: media_player.volume_set
+                  continue_on_error: true
+                  target:
+                    entity_id: "{{ repeat.item.entity_id }}"
+                  data:
+                    volume_level: "{{ repeat.item.volume | float }}"
+
+                - delay:
+                    seconds: 2
+
+        - delay:
+            seconds: 1
 
 icon: mdi:bullhorn
